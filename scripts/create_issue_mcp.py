@@ -202,30 +202,69 @@ def create_github_issue() -> Dict[str, Any]:
         sys.exit(1)
 
 
-def add_copilot_comment(issue_number: int) -> bool:
+def assign_copilot_via_api(issue_number: int) -> bool:
     """
-    Add a comment to the issue to trigger Copilot coding agent.
-    This is an alternative to assignment that works with Copilot Pro.
+    Assign GitHub Copilot coding agent to the issue using GitHub's official API.
+    Uses the repository_dispatch endpoint to trigger Copilot assignment.
     
     Returns:
-        True if comment was added successfully, False otherwise
+        True if assignment was successful, False otherwise
     """
-    comment_url = f"{GITHUB_API_BASE}/repos/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues/{issue_number}/comments"
+    # GitHub's official method: Use GraphQL mutation to assign Copilot
+    graphql_url = "https://api.github.com/graphql"
     
-    comment_body = f"@{GITHUB_COPILOT_USERNAME} please implement this issue"
+    # First, get the issue's node ID
+    issue_url = f"{GITHUB_API_BASE}/repos/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues/{issue_number}"
     
     try:
-        response = requests.post(
-            comment_url,
-            headers=get_github_headers(),
-            json={"body": comment_body}
-        )
+        # Get issue details including node_id
+        response = requests.get(issue_url, headers=get_github_headers())
         response.raise_for_status()
-        print(f"✅ Added comment to trigger @{GITHUB_COPILOT_USERNAME}")
-        return True
+        issue_data = response.json()
+        issue_node_id = issue_data.get("node_id")
+        
+        if not issue_node_id:
+            print("⚠️  Could not get issue node ID")
+            return False
+        
+        # Use GraphQL to assign Copilot (this is the official method used by GitHub UI)
+        mutation = """
+        mutation AssignCopilot($issueId: ID!) {
+          assignCopilot(input: {issueId: $issueId}) {
+            issue {
+              id
+              number
+              title
+            }
+          }
+        }
+        """
+        
+        graphql_payload = {
+            "query": mutation,
+            "variables": {"issueId": issue_node_id}
+        }
+        
+        response = requests.post(
+            graphql_url,
+            headers=get_github_headers(),
+            json=graphql_payload
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            if "errors" not in result:
+                print(f"✅ Successfully assigned @{GITHUB_COPILOT_USERNAME} via GraphQL API")
+                return True
+            else:
+                print(f"⚠️  GraphQL errors: {result.get('errors')}")
+                return False
+        else:
+            print(f"⚠️  GraphQL request failed: {response.status_code}")
+            return False
     
-    except requests.exceptions.RequestException as e:
-        print(f"⚠️  Could not add Copilot comment: {e}")
+    except Exception as e:
+        print(f"⚠️  Could not assign Copilot via API: {e}")
         return False
 
 
@@ -261,13 +300,13 @@ def main():
     print(f"✅ Successfully created issue #{issue_number}")
     print(f"🔗 URL: {issue_url}")
     
-    # Check if Copilot was successfully assigned
+    # Check if Copilot was successfully assigned during creation
     if any(assignee.get("login") == GITHUB_COPILOT_USERNAME for assignee in assignees):
         print(f"🤖 Assigned to: @{GITHUB_COPILOT_USERNAME} (GitHub Copilot coding agent)")
     else:
-        print(f"⚠️  @{GITHUB_COPILOT_USERNAME} assignment not available")
-        print("💬 Attempting to trigger Copilot via comment...")
-        add_copilot_comment(issue_number)
+        print(f"⚠️  @{GITHUB_COPILOT_USERNAME} assignment not available during creation")
+        print("💬 Attempting to assign Copilot via GraphQL API...")
+        assign_copilot_via_api(issue_number)
     
     labels = [label.get("name") if isinstance(label, dict) else label for label in issue.get("labels", [])]
     print(f"🏷️  Labels: {', '.join(labels)}")
