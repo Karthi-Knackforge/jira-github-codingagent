@@ -93,13 +93,15 @@ def create_copilot_optimized_issue_body() -> str:
 
 def search_existing_issue(jira_key: str) -> Optional[Dict[str, Any]]:
     """
-    Search for existing GitHub issues containing the Jira key.
-    Returns the first matching issue or None if not found.
+    Search for existing OPEN GitHub issues containing the Jira key.
+    Returns the first matching OPEN issue or None if not found.
+    Closed issues are ignored - we can create new issues for the same Jira key if previous ones are closed.
     """
-    print(f"🔍 Searching for existing issues with key: {jira_key} in {TARGET_REPO_OWNER}/{TARGET_REPO_NAME}")
+    print(f"🔍 Searching for existing OPEN issues with key: {jira_key} in {TARGET_REPO_OWNER}/{TARGET_REPO_NAME}")
     
     search_url = f"{GITHUB_API_BASE}/search/issues"
-    search_query = f"repo:{TARGET_REPO_OWNER}/{TARGET_REPO_NAME} {jira_key} in:title,body type:issue"
+    # Only search for OPEN issues - closed ones are ignored
+    search_query = f"repo:{TARGET_REPO_OWNER}/{TARGET_REPO_NAME} {jira_key} in:title,body type:issue state:open"
     
     params = {"q": search_query, "per_page": 1}
     
@@ -110,8 +112,11 @@ def search_existing_issue(jira_key: str) -> Optional[Dict[str, Any]]:
         data = response.json()
         
         if data.get("total_count", 0) > 0:
-            return data["items"][0]
+            issue = data["items"][0]
+            print(f"   Found open issue: #{issue.get('number')} - {issue.get('state')}")
+            return issue
         
+        print("   No open issues found")
         return None
     
     except requests.exceptions.RequestException as e:
@@ -233,13 +238,14 @@ def main():
     # Validate environment variables
     check_required_env_vars()
     
-    # Check for existing issue with this Jira key
+    # Check for existing OPEN issue with this Jira key
     existing_issue = search_existing_issue(JIRA_ISSUE_KEY)
     
     if existing_issue:
         issue_number = existing_issue.get("number")
         issue_url = existing_issue.get("html_url")
-        print(f"ℹ️  Issue already exists: #{issue_number}")
+        issue_state = existing_issue.get("state")
+        print(f"ℹ️  Open issue already exists: #{issue_number} (state: {issue_state})")
         print(f"🔗 URL: {issue_url}")
         print("✅ Skipping creation - no duplicate will be created")
         return
