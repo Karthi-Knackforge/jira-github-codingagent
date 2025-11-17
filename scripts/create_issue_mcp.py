@@ -202,69 +202,46 @@ def create_github_issue() -> Dict[str, Any]:
         sys.exit(1)
 
 
-def assign_copilot_via_api(issue_number: int) -> bool:
+def assign_copilot_to_issue(issue_number: int) -> bool:
     """
-    Assign GitHub Copilot coding agent to the issue using GitHub's official API.
-    Uses the repository_dispatch endpoint to trigger Copilot assignment.
+    Assign GitHub Copilot coding agent to an existing issue.
+    
+    Uses the standard GitHub REST API to add Copilot as an assignee.
+    This approach matches the method used by GitHub's own tooling.
     
     Returns:
         True if assignment was successful, False otherwise
     """
-    # GitHub's official method: Use GraphQL mutation to assign Copilot
-    graphql_url = "https://api.github.com/graphql"
-    
-    # First, get the issue's node ID
-    issue_url = f"{GITHUB_API_BASE}/repos/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues/{issue_number}"
+    assignees_url = f"{GITHUB_API_BASE}/repos/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues/{issue_number}/assignees"
     
     try:
-        # Get issue details including node_id
-        response = requests.get(issue_url, headers=get_github_headers())
-        response.raise_for_status()
-        issue_data = response.json()
-        issue_node_id = issue_data.get("node_id")
+        print(f"🤖 Assigning @{GITHUB_COPILOT_USERNAME} to issue #{issue_number}...")
         
-        if not issue_node_id:
-            print("⚠️  Could not get issue node ID")
-            return False
-        
-        # Use GraphQL to assign Copilot (this is the official method used by GitHub UI)
-        mutation = """
-        mutation AssignCopilot($issueId: ID!) {
-          assignCopilot(input: {issueId: $issueId}) {
-            issue {
-              id
-              number
-              title
-            }
-          }
-        }
-        """
-        
-        graphql_payload = {
-            "query": mutation,
-            "variables": {"issueId": issue_node_id}
-        }
+        payload = {"assignees": [GITHUB_COPILOT_USERNAME]}
         
         response = requests.post(
-            graphql_url,
+            assignees_url,
             headers=get_github_headers(),
-            json=graphql_payload
+            json=payload
         )
         
-        if response.status_code == 200:
+        if response.status_code in [200, 201]:
             result = response.json()
-            if "errors" not in result:
-                print(f"✅ Successfully assigned @{GITHUB_COPILOT_USERNAME} via GraphQL API")
+            assignees = [a["login"] for a in result.get("assignees", [])]
+            
+            if GITHUB_COPILOT_USERNAME in assignees:
+                print(f"✅ Successfully assigned @{GITHUB_COPILOT_USERNAME}")
                 return True
             else:
-                print(f"⚠️  GraphQL errors: {result.get('errors')}")
+                print(f"⚠️  @{GITHUB_COPILOT_USERNAME} not in assignees list after assignment")
                 return False
         else:
-            print(f"⚠️  GraphQL request failed: {response.status_code}")
+            print(f"⚠️  Assignment failed with status {response.status_code}")
+            print(f"📄 Response: {response.text}")
             return False
     
     except Exception as e:
-        print(f"⚠️  Could not assign Copilot via API: {e}")
+        print(f"❌ Exception during Copilot assignment: {e}")
         return False
 
 
@@ -300,13 +277,12 @@ def main():
     print(f"✅ Successfully created issue #{issue_number}")
     print(f"🔗 URL: {issue_url}")
     
-    # Check if Copilot was successfully assigned during creation
-    if any(assignee.get("login") == GITHUB_COPILOT_USERNAME for assignee in assignees):
-        print(f"🤖 Assigned to: @{GITHUB_COPILOT_USERNAME} (GitHub Copilot coding agent)")
-    else:
-        print(f"⚠️  @{GITHUB_COPILOT_USERNAME} assignment not available during creation")
-        print("💬 Attempting to assign Copilot via GraphQL API...")
-        assign_copilot_via_api(issue_number)
+    # Attempt to assign Copilot (separate step after creation for better reliability)
+    if not any(assignee.get("login") == GITHUB_COPILOT_USERNAME for assignee in assignees):
+        print(f"⚠️  @{GITHUB_COPILOT_USERNAME} not assigned during creation, assigning now...")
+        assignment_success = assign_copilot_to_issue(issue_number)
+        if not assignment_success:
+            print(f"💡 Manual assignment may be needed - visit {issue_url}")
     
     labels = [label.get("name") if isinstance(label, dict) else label for label in issue.get("labels", [])]
     print(f"🏷️  Labels: {', '.join(labels)}")
