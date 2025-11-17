@@ -122,6 +122,7 @@ def search_existing_issue(jira_key: str) -> Optional[Dict[str, Any]]:
 def create_github_issue() -> Dict[str, Any]:
     """
     Create a new GitHub issue with Copilot-optimized formatting.
+    Tries to assign to @github, falls back to creating without assignment if not available.
     
     Returns:
         Dict containing the created issue data
@@ -134,7 +135,7 @@ def create_github_issue() -> Dict[str, Any]:
     print(f"📝 Creating issue in {TARGET_REPO_OWNER}/{TARGET_REPO_NAME}")
     print(f"   Title: {title}")
     
-    # Build issue payload
+    # Build issue payload with Copilot assignment
     issue_data = {
         "title": title,
         "body": create_copilot_optimized_issue_body(),
@@ -151,7 +152,43 @@ def create_github_issue() -> Dict[str, Any]:
         response.raise_for_status()
         
         issue = response.json()
+        print(f"✅ Issue created with @{GITHUB_COPILOT_USERNAME} assignment")
         return issue
+    
+    except requests.exceptions.HTTPError as e:
+        # Check if error is due to invalid assignee (Copilot not available)
+        if e.response.status_code == 422 and "assignees" in e.response.text:
+            print(f"⚠️  @{GITHUB_COPILOT_USERNAME} not available in this repo, creating issue without assignment...")
+            
+            # Retry without assignees
+            issue_data_no_assignee = {
+                "title": title,
+                "body": create_copilot_optimized_issue_body(),
+                "labels": ["jira-sync", "copilot-agent", f"priority-{JIRA_PRIORITY.lower()}"],
+            }
+            
+            try:
+                response = requests.post(
+                    create_url,
+                    headers=get_github_headers(),
+                    json=issue_data_no_assignee
+                )
+                response.raise_for_status()
+                
+                issue = response.json()
+                print(f"✅ Issue created (assign @{GITHUB_COPILOT_USERNAME} manually if needed)")
+                return issue
+            
+            except requests.exceptions.RequestException as retry_error:
+                print(f"❌ Error creating issue without assignee: {retry_error}")
+                if hasattr(retry_error, 'response') and retry_error.response is not None:
+                    print(f"Response: {retry_error.response.text}")
+                sys.exit(1)
+        else:
+            print(f"❌ Error creating GitHub issue: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
+            sys.exit(1)
     
     except requests.exceptions.RequestException as e:
         print(f"❌ Error creating GitHub issue: {e}")

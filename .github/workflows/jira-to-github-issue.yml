@@ -2,7 +2,7 @@ name: Create GitHub Issue from Jira
 
 on:
   repository_dispatch:
-    types: [jira-to-github-issue]
+    types: [jira-to-github-issue, jira-issue-created]
 
 jobs:
   create-issue:
