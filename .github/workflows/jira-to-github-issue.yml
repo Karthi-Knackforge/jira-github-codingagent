@@ -1,4 +1,4 @@
-name: Create GitHub Issue from Jira via MCP
+name: Create GitHub Issue from Jira
 
 on:
   repository_dispatch:
@@ -25,7 +25,7 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Create GitHub Issue via MCP and Assign to Copilot
+      - name: Create GitHub Issue and Assign to Copilot
         id: create_issue
         env:
           GITHUB_TOKEN: ${{ secrets.GB_TOKEN }}

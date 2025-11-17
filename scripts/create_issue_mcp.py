@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Create GitHub issue from Jira ticket via MCP GitHub server and assign to Copilot.
+Create GitHub issue from Jira ticket in target repository and assign to Copilot.
 Prevents duplicate issues by checking for existing Jira key references.
-Uses MCP to connect to target repositories from this centralized agent repo.
+
+This centralized agent repo orchestrates issue creation across multiple target repos.
+Routes to different repos based on Jira payload (target_owner, target_repo).
 """
 
 import os
 import sys
-import json
 from typing import Optional, Dict, Any
+import requests
 
 # Configuration from environment variables
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -21,7 +23,8 @@ JIRA_ISSUE_URL = os.environ.get("JIRA_ISSUE_URL", "")
 JIRA_PRIORITY = os.environ.get("JIRA_PRIORITY", "Medium")
 JIRA_ISSUE_TYPE = os.environ.get("JIRA_ISSUE_TYPE", "Task")
 
-# GitHub Copilot coding agent username
+# GitHub API configuration
+GITHUB_API_BASE = "https://api.github.com"
 GITHUB_COPILOT_USERNAME = "github"
 
 
@@ -39,6 +42,15 @@ def check_required_env_vars():
     if missing:
         print(f"❌ Error: Missing required environment variables: {', '.join(missing)}")
         sys.exit(1)
+
+
+def get_github_headers() -> Dict[str, str]:
+    """Return headers for GitHub API requests."""
+    return {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
 
 
 def create_copilot_optimized_issue_body() -> str:
@@ -79,177 +91,78 @@ def create_copilot_optimized_issue_body() -> str:
     return issue_body
 
 
-def search_existing_issue_via_mcp(jira_key: str) -> Optional[Dict[str, Any]]:
+def search_existing_issue(jira_key: str) -> Optional[Dict[str, Any]]:
     """
-    Search for existing GitHub issues containing the Jira key via MCP.
-    Uses the MCP GitHub search_issues tool.
-    
+    Search for existing GitHub issues containing the Jira key.
     Returns the first matching issue or None if not found.
     """
     print(f"🔍 Searching for existing issues with key: {jira_key} in {TARGET_REPO_OWNER}/{TARGET_REPO_NAME}")
     
-    # MCP GitHub search query
-    search_query = f"repo:{TARGET_REPO_OWNER}/{TARGET_REPO_NAME} {jira_key} in:title,body is:issue"
+    search_url = f"{GITHUB_API_BASE}/search/issues"
+    search_query = f"repo:{TARGET_REPO_OWNER}/{TARGET_REPO_NAME} {jira_key} in:title,body type:issue"
     
-    # Call MCP GitHub search tool
+    params = {"q": search_query, "per_page": 1}
+    
     try:
-        # Import MCP client
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-        
-        # Connect to MCP GitHub server
-        server_params = StdioServerParameters(
-            command="npx",
-            args=["-y", "@modelcontextprotocol/server-github"],
-            env={
-                **os.environ,
-                "GITHUB_PERSONAL_ACCESS_TOKEN": GITHUB_TOKEN,
-            }
-        )
-        
-        async def search_issues():
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    
-                    # Call search_issues tool
-                    result = await session.call_tool(
-                        "search_issues",
-                        arguments={
-                            "query": search_query,
-                            "perPage": 1
-                        }
-                    )
-                    
-                    return result
-        
-        # Run async search
-        import asyncio
-        result = asyncio.run(search_issues())
-        
-        # Parse result
-        if result and result.content:
-            content = result.content[0].text if result.content else "{}"
-            data = json.loads(content)
-            
-            if data.get("total_count", 0) > 0 and data.get("items"):
-                return data["items"][0]
-        
-        return None
-    
-    except Exception as e:
-        print(f"⚠️  Warning: MCP search failed, falling back to direct API: {e}")
-        # Fallback to direct API if MCP fails
-        import requests
-        
-        search_url = "https://api.github.com/search/issues"
-        headers = {
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        params = {"q": search_query, "per_page": 1}
-        
-        response = requests.get(search_url, headers=headers, params=params)
+        response = requests.get(search_url, headers=get_github_headers(), params=params)
         response.raise_for_status()
+        
         data = response.json()
         
         if data.get("total_count", 0) > 0:
             return data["items"][0]
         
         return None
+    
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️  Warning: Failed to search for existing issues: {e}")
+        return None
 
 
-def create_github_issue_via_mcp() -> Dict[str, Any]:
+def create_github_issue() -> Dict[str, Any]:
     """
-    Create a new GitHub issue via MCP GitHub server.
-    Uses the mcp_github_github_issue_write tool with method='create'.
+    Create a new GitHub issue with Copilot-optimized formatting.
     
     Returns:
         Dict containing the created issue data
     """
+    create_url = f"{GITHUB_API_BASE}/repos/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues"
+    
     # Create issue title with Jira key
     title = f"[{JIRA_ISSUE_KEY}] {JIRA_SUMMARY}"
-    body = create_copilot_optimized_issue_body()
     
     print(f"📝 Creating issue in {TARGET_REPO_OWNER}/{TARGET_REPO_NAME}")
     print(f"   Title: {title}")
     
-    try:
-        # Import MCP client
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-        
-        # Connect to MCP GitHub server
-        server_params = StdioServerParameters(
-            command="npx",
-            args=["-y", "@modelcontextprotocol/server-github"],
-            env={
-                **os.environ,
-                "GITHUB_PERSONAL_ACCESS_TOKEN": GITHUB_TOKEN,
-            }
-        )
-        
-        async def create_issue():
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    
-                    # Call issue_write tool to create issue
-                    result = await session.call_tool(
-                        "github_issue_write",
-                        arguments={
-                            "method": "create",
-                            "owner": TARGET_REPO_OWNER,
-                            "repo": TARGET_REPO_NAME,
-                            "title": title,
-                            "body": body,
-                            "labels": ["jira-sync", "copilot-agent", f"priority-{JIRA_PRIORITY.lower()}"],
-                            "assignees": [GITHUB_COPILOT_USERNAME],
-                        }
-                    )
-                    
-                    return result
-        
-        # Run async creation
-        import asyncio
-        result = asyncio.run(create_issue())
-        
-        # Parse result
-        if result and result.content:
-            content = result.content[0].text if result.content else "{}"
-            issue = json.loads(content)
-            return issue
-        
-        raise Exception("MCP returned no content")
+    # Build issue payload
+    issue_data = {
+        "title": title,
+        "body": create_copilot_optimized_issue_body(),
+        "labels": ["jira-sync", "copilot-agent", f"priority-{JIRA_PRIORITY.lower()}"],
+        "assignees": [GITHUB_COPILOT_USERNAME],
+    }
     
-    except Exception as e:
-        print(f"⚠️  Warning: MCP creation failed, falling back to direct API: {e}")
-        # Fallback to direct API if MCP fails
-        import requests
-        
-        create_url = f"https://api.github.com/repos/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues"
-        headers = {
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        issue_data = {
-            "title": title,
-            "body": body,
-            "labels": ["jira-sync", "copilot-agent", f"priority-{JIRA_PRIORITY.lower()}"],
-            "assignees": [GITHUB_COPILOT_USERNAME],
-        }
-        
-        response = requests.post(create_url, headers=headers, json=issue_data)
+    try:
+        response = requests.post(
+            create_url,
+            headers=get_github_headers(),
+            json=issue_data
+        )
         response.raise_for_status()
         
-        return response.json()
+        issue = response.json()
+        return issue
+    
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error creating GitHub issue: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"Response: {e.response.text}")
+        sys.exit(1)
 
 
 def main():
     """Main execution flow."""
-    print("🚀 Starting Jira to GitHub Issue workflow via MCP...")
+    print("🚀 Starting Jira to GitHub Issue workflow...")
     print(f"📍 Target Repository: {TARGET_REPO_OWNER}/{TARGET_REPO_NAME}")
     print(f"📝 Jira Issue: {JIRA_ISSUE_KEY}")
     
@@ -257,19 +170,19 @@ def main():
     check_required_env_vars()
     
     # Check for existing issue with this Jira key
-    existing_issue = search_existing_issue_via_mcp(JIRA_ISSUE_KEY)
+    existing_issue = search_existing_issue(JIRA_ISSUE_KEY)
     
     if existing_issue:
         issue_number = existing_issue.get("number")
         issue_url = existing_issue.get("html_url")
         print(f"ℹ️  Issue already exists: #{issue_number}")
         print(f"🔗 URL: {issue_url}")
-        print(f"✅ Skipping creation - no duplicate will be created")
+        print("✅ Skipping creation - no duplicate will be created")
         return
     
-    # Create new issue via MCP
-    print(f"✨ No existing issue found, creating new issue...")
-    issue = create_github_issue_via_mcp()
+    # Create new issue
+    print("✨ No existing issue found, creating new issue...")
+    issue = create_github_issue()
     
     issue_number = issue.get("number")
     issue_url = issue.get("html_url")
