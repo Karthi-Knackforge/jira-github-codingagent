@@ -63,6 +63,7 @@ jobs:
           TARGET_REPO_NAME: ${{ github.event.client_payload.target_repo || 'cms-project' }}
           ISSUE_NUMBER: ${{ env.ISSUE_NUMBER }}
           CONTEXT_BRANCH: ${{ env.CONTEXT_BRANCH }}
+          JIRA_ISSUE_KEY: ${{ github.event.client_payload.jira_key }}
         run: |
           python agent-repo/scripts/assign_to_copilot.py
 

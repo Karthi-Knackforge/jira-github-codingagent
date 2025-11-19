@@ -29,8 +29,8 @@ Use this checklist to deploy the enhanced Jira to GitHub Copilot workflow.
 
 - [ ] Create GitHub PAT at: https://github.com/settings/tokens
 - [ ] Select scopes:
-  - [ ] `repo` (Full control of private repositories)
-  - [ ] `workflow` (Update GitHub Action workflows)
+- [ ] `repo` (Full control of private repositories)
+- [ ] `workflow` (Update GitHub Action workflows)
 - [ ] Copy token (you won't see it again!)
 - [ ] Store token securely (password manager)
 

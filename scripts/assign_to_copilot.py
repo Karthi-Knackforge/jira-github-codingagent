@@ -52,78 +52,116 @@ def get_github_headers() -> Dict[str, str]:
 
 def assign_copilot_to_issue() -> bool:
     """
-    Assign GitHub Copilot coding agent to the issue.
+    Assign GitHub Copilot coding agent to an existing issue using GraphQL API.
     
-    Tries multiple methods:
-    1. GitHub's official assign_copilot_to_issue API
-    2. GraphQL mutation with copilot-swe-agent
-    3. REST API with Copilot username
+    Uses the official GitHub GraphQL API method with addAssigneesToAssignable mutation.
+    First finds the Copilot agent via suggestedActors, then assigns it to the issue.
+    
+    This is the proven working approach from create_issue_mcp.py.
     
     Returns:
-        True if successful, False otherwise
+        True if assignment was successful, False otherwise
     """
     issue_num = int(ISSUE_NUMBER)
     
-    print(f"🤖 Assigning Copilot to issue #{issue_num}...")
-    
-    # Method 1: Try official GitHub Copilot assignment API (if available)
     try:
-        assign_url = f"{GITHUB_API_BASE}/repos/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues/{issue_num}/assignees"
+        print(f"🤖 Assigning @copilot-swe-agent to issue #{issue_num}...")
         
-        # Try with copilot-swe-agent first (official agent username)
-        response = requests.post(
-            assign_url,
-            headers=get_github_headers(),
-            json={"assignees": ["copilot-swe-agent"]},
-            timeout=10
-        )
-        
-        if response.status_code == 201:
-            print("✅ Assigned via copilot-swe-agent")
-            return True
-        
-        # Fallback to "Copilot" username
-        response = requests.post(
-            assign_url,
-            headers=get_github_headers(),
-            json={"assignees": ["Copilot"]},
-            timeout=10
-        )
-        
-        if response.status_code == 201:
-            print("✅ Assigned via Copilot username")
-            return True
-        
-        print(f"⚠️  Assignment returned status {response.status_code}")
-        
-    except requests.exceptions.RequestException as e:
-        print(f"⚠️  Error assigning Copilot: {e}")
-    
-    # Method 2: Try GraphQL approach
-    try:
-        print("🔄 Trying GraphQL assignment method...")
+        # Step 1: Get Copilot agent's GraphQL ID
         copilot_id = get_copilot_agent_id()
+        if not copilot_id:
+            print("⚠️  Could not find Copilot agent ID")
+            return False
         
-        if copilot_id:
-            issue_node_id = get_issue_node_id(issue_num)
+        # Step 2: Get issue's GraphQL node ID
+        issue_url = f"{GITHUB_API_BASE}/repos/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues/{issue_num}"
+        issue_response = requests.get(issue_url, headers=get_github_headers(), timeout=10)
+        
+        if issue_response.status_code != 200:
+            print(f"❌ Failed to fetch issue: {issue_response.status_code}")
+            return False
+        
+        issue_data = issue_response.json()
+        issue_node_id = issue_data.get("node_id")
+        
+        if not issue_node_id:
+            print("❌ Could not get issue node_id")
+            return False
+        
+        # Step 3: Use GraphQL mutation to assign Copilot
+        graphql_url = f"{GITHUB_API_BASE}/graphql"
+        mutation = """
+        mutation($issueId: ID!, $assigneeIds: [ID!]!) {
+          addAssigneesToAssignable(input: {assignableId: $issueId, assigneeIds: $assigneeIds}) {
+            assignable {
+              ... on Issue {
+                number
+                assignees(first: 10) {
+                  nodes {
+                    login
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        
+        variables = {
+            "issueId": issue_node_id,
+            "assigneeIds": [copilot_id]
+        }
+        
+        response = requests.post(
+            graphql_url,
+            headers=get_github_headers(),
+            json={"query": mutation, "variables": variables},
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            print(f"⚠️  GraphQL mutation failed with status {response.status_code}")
+            print(f"📄 Response: {response.text[:200]}")
+            return False
+        
+        result = response.json()
+        
+        if "errors" in result:
+            print(f"❌ GraphQL errors: {result['errors']}")
+            return False
+        
+        # Check if Copilot is in the assignees list
+        assignees_data = result.get("data", {}).get("addAssigneesToAssignable", {}).get("assignable", {}).get("assignees", {}).get("nodes", [])
+        assignee_logins = [a["login"] for a in assignees_data]
+        
+        if "copilot-swe-agent" in assignee_logins:
+            print("✅ Successfully assigned Copilot coding agent")
+            return True
+        else:
+            print("⚠️  Copilot not found in assignees after mutation")
+            print(f"💡 Assignees: {assignee_logins}")
+            return False
             
-            if issue_node_id:
-                if assign_via_graphql(issue_node_id, copilot_id):
-                    print("✅ Assigned via GraphQL")
-                    return True
-    
     except Exception as e:
-        print(f"⚠️  GraphQL assignment failed: {e}")
-    
-    print("⚠️  Automatic assignment unsuccessful")
-    print("💡 Copilot may need to be manually assigned or mentioned in a comment")
-    return False
+        print(f"❌ Error assigning Copilot: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def get_copilot_agent_id() -> Optional[str]:
-    """Get the Copilot coding agent's GraphQL node ID."""
+    """
+    Get the Copilot coding agent's GraphQL node ID using suggestedActors query.
+    
+    This is the official way to find Copilot agent according to GitHub docs:
+    https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent/create-a-pr
+    
+    Returns:
+        Copilot agent's GraphQL ID (e.g., "BOT_...") or None if not found
+    """
     graphql_url = f"{GITHUB_API_BASE}/graphql"
     
+    # Query to find suggested actors with CAN_BE_ASSIGNED capability
     query = """
     query($owner: String!, $name: String!) {
       repository(owner: $owner, name: $name) {
@@ -132,6 +170,9 @@ def get_copilot_agent_id() -> Optional[str]:
             login
             __typename
             ... on Bot {
+              id
+            }
+            ... on User {
               id
             }
           }
@@ -153,81 +194,35 @@ def get_copilot_agent_id() -> Optional[str]:
             timeout=10
         )
         
-        if response.status_code == 200:
-            data = response.json()
-            actors = data.get("data", {}).get("repository", {}).get("suggestedActors", {}).get("nodes", [])
-            
-            for actor in actors:
-                if actor.get("login") == "copilot-swe-agent":
-                    return actor.get("id")
+        if response.status_code != 200:
+            print(f"⚠️  Failed to query suggestedActors: {response.status_code}")
+            return None
+        
+        data = response.json()
+        
+        if "errors" in data:
+            print(f"⚠️  GraphQL errors: {data['errors']}")
+            return None
+        
+        actors = data.get("data", {}).get("repository", {}).get("suggestedActors", {}).get("nodes", [])
+        
+        # Look for copilot-swe-agent (the official Copilot coding agent login)
+        for actor in actors:
+            if actor.get("login") == "copilot-swe-agent":
+                agent_id = actor.get("id")
+                if agent_id:
+                    print(f"✅ Found Copilot agent ID: {agent_id}")
+                    return agent_id
+        
+        print("⚠️  Copilot coding agent not found in suggestedActors")
+        print("💡 Ensure Copilot is enabled for this repository")
+        return None
         
     except Exception as e:
-        print(f"⚠️  Error getting Copilot ID: {e}")
-    
-    return None
-
-
-def get_issue_node_id(issue_num: int) -> Optional[str]:
-    """Get the issue's GraphQL node ID."""
-    url = f"{GITHUB_API_BASE}/repos/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues/{issue_num}"
-    
-    try:
-        response = requests.get(url, headers=get_github_headers(), timeout=10)
-        
-        if response.status_code == 200:
-            issue_data = response.json()
-            return issue_data.get("node_id")
-    
-    except Exception as e:
-        print(f"⚠️  Error getting issue node ID: {e}")
-    
-    return None
-
-
-def assign_via_graphql(issue_node_id: str, copilot_id: str) -> bool:
-    """Assign Copilot using GraphQL mutation."""
-    graphql_url = f"{GITHUB_API_BASE}/graphql"
-    
-    mutation = """
-    mutation($issueId: ID!, $assigneeIds: [ID!]!) {
-      addAssigneesToAssignable(input: {assignableId: $issueId, assigneeIds: $assigneeIds}) {
-        assignable {
-          ... on Issue {
-            number
-            assignees(first: 10) {
-              nodes {
-                login
-              }
-            }
-          }
-        }
-      }
-    }
-    """
-    
-    variables = {
-        "issueId": issue_node_id,
-        "assigneeIds": [copilot_id]
-    }
-    
-    try:
-        response = requests.post(
-            graphql_url,
-            headers=get_github_headers(),
-            json={"query": mutation, "variables": variables},
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            
-            if "errors" not in result:
-                return True
-    
-    except Exception as e:
-        print(f"⚠️  GraphQL mutation error: {e}")
-    
-    return False
+        print(f"❌ Error finding Copilot agent: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 def add_copilot_instructions_comment() -> bool:
@@ -318,23 +313,36 @@ def main():
     # Validate environment variables
     check_required_env_vars()
     
+    # Add instructions comment FIRST (so Copilot sees it immediately)
+    comment_added = add_copilot_instructions_comment()
+    
+    if not comment_added:
+        print("⚠️  Warning: Could not add instructions comment")
+    
     # Try to assign Copilot to the issue
     assignment_successful = assign_copilot_to_issue()
     
-    # Add instructions comment (whether assignment succeeded or not)
-    comment_added = add_copilot_instructions_comment()
-    
-    if assignment_successful and comment_added:
-        print(f"\n✅ Successfully assigned @copilot to issue #{ISSUE_NUMBER}")
+    if assignment_successful:
+        print(f"\n✅ Successfully assigned @copilot-swe-agent to issue #{ISSUE_NUMBER}")
         print(f"📚 Instructions added with full project context")
         print(f"🌿 Copilot will work on branch: {CONTEXT_BRANCH}")
-    elif comment_added:
+        print(f"🔗 URL: https://github.com/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues/{ISSUE_NUMBER}")
+    else:
         print(f"\n⚠️  Issue created with instructions, but automatic assignment may have failed")
         print(f"💡 Please manually assign @copilot to issue #{ISSUE_NUMBER}")
         print(f"🔗 URL: https://github.com/{TARGET_REPO_OWNER}/{TARGET_REPO_NAME}/issues/{ISSUE_NUMBER}")
-    else:
-        print(f"\n❌ Failed to complete setup")
-        sys.exit(1)
+        print(f"\n📝 Next steps:")
+        print(f"   1. Visit the issue URL above")
+        print(f"   2. Click 'Assignees' on the right sidebar")
+        print(f"   3. Search for and select '@copilot' or 'copilot-swe-agent'")
+        print(f"   4. Copilot will automatically start working on the issue")
+        
+        # Don't fail the workflow if only assignment failed but comment was added
+        if comment_added:
+            print(f"\n✅ Instructions are available for manual assignment")
+        else:
+            print(f"\n❌ Both assignment and comment failed")
+            sys.exit(1)
 
 
 if __name__ == "__main__":
